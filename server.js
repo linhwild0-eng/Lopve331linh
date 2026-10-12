@@ -137,7 +137,7 @@ function buildDefaultData() {
 function ensureConfiguredAdminAccount(data) {
   if (!data || !Array.isArray(data.accounts)) return data;
   const envUsername = String(process.env.NTTCLASS_ADMIN_USERNAME || '').trim();
-  const envPassword = String(process.env.NTTCLASS_ADMIN_PASSWORD || '').trim();
+  const envPassword = String(process.env.NTTCLASS_ADMIN_PASSWORD || '');
   const envDisplayName = String(process.env.NTTCLASS_ADMIN_DISPLAY_NAME || '').trim();
   if (!envUsername || !envPassword || !envDisplayName) return data;
 
@@ -207,7 +207,9 @@ function normalizeData(value) {
     ...data,
     classes: Array.isArray(data.classes) ? data.classes : [],
     staff: Array.isArray(data.staff) ? data.staff : [],
-    students: Array.isArray(data.students) ? data.students : [],
+    students: Array.isArray(data.students)
+      ? data.students.map(({ sessionTuition, ...student }) => student)
+      : [],
     assessments: Array.isArray(data.assessments) ? data.assessments : [],
     attendance: Array.isArray(data.attendance) ? data.attendance : [],
     staffAttendance: Array.isArray(data.staffAttendance) ? data.staffAttendance : [],
@@ -603,6 +605,70 @@ app.get('/api/data', authenticate, (req, res) => {
   res.json(dataForUser(req.appData, req.user));
 });
 
+function tuitionSummaryForMonth(data, month) {
+  const attendanceCounts = new Map();
+  for (const record of data.attendance) {
+    if (record.present && typeof record.date === 'string' && record.date.startsWith(`${month}-`)) {
+      attendanceCounts.set(record.studentId, (attendanceCounts.get(record.studentId) || 0) + 1);
+    }
+  }
+  const paidStudents = new Set(data.payments
+    .filter(item => item.month === month && item.paid)
+    .map(item => item.studentId));
+  const students = data.students.map(student => {
+    const attendedSessions = attendanceCounts.get(student.id) || 0;
+    const sessionTuition = Number(student.tuition || 0) / 8;
+    const amountDue = attendedSessions * sessionTuition;
+    return { studentId: student.id, attendedSessions, sessionTuition, amountDue, paid: paidStudents.has(student.id) };
+  });
+  const due = students.reduce((total, student) => total + student.amountDue, 0);
+  const received = students.reduce((total, student) => total + (student.paid ? student.amountDue : 0), 0);
+  return { students, summary: { due, received, outstanding: due - received } };
+}
+
+app.get('/api/finance', authenticate, (req, res) => {
+  if (!can(req.user, req.appData, 'finance', 'view')) {
+    return res.status(403).json({ error: 'Bạn không có quyền xem dữ liệu học phí.' });
+  }
+  const { month } = req.query;
+  if (!isValidMonth(month)) {
+    return res.status(400).json({ error: 'Tháng học phí không hợp lệ.' });
+  }
+  return res.json({ month, ...tuitionSummaryForMonth(req.appData, month) });
+});
+
+app.put('/api/finance/monthly-tuition', authenticate, async (req, res) => {
+  if (!can(req.user, req.appData, 'finance', 'manage')) {
+    return res.status(403).json({ error: 'Bạn không có quyền thay đổi học phí.' });
+  }
+  const { studentId, tuition, allStudents } = req.body || {};
+  if (!Number.isSafeInteger(tuition) || tuition < 0 || tuition > 1000000000 ||
+      (allStudents === true ? studentId !== undefined : typeof studentId !== 'string' || !studentId)) {
+    return res.status(400).json({ error: 'Học phí tháng phải là số nguyên từ 0 đến 1.000.000.000 đồng.' });
+  }
+  try {
+    const updatedCount = await serializeDataWrite(async () => {
+      const data = await readAppData();
+      if (allStudents === true) {
+        if (!data.students.length) throw makeError(404, 'Chưa có học sinh để cập nhật học phí.');
+        for (const student of data.students) student.tuition = tuition;
+        await writeAppData(data);
+        return data.students.length;
+      }
+      const student = data.students.find(item => item.id === studentId);
+      if (!student) throw makeError(404, 'Không tìm thấy học sinh.');
+      student.tuition = tuition;
+      await writeAppData(data);
+      return 1;
+    });
+    return res.json({ ok: true, ...(allStudents === true ? { updatedCount } : { studentId }), tuition });
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message });
+    console.error('Update monthly tuition failed:', error.message);
+    return res.status(500).json({ error: 'Không thể cập nhật học phí tháng.' });
+  }
+});
+
 app.get('/api/reports', authenticate, (req, res) => {
   if (!can(req.user, req.appData, 'reports', 'view')) {
     return res.status(403).json({ error: 'Bạn không có quyền xem báo cáo.' });
@@ -614,10 +680,9 @@ app.get('/api/reports', authenticate, (req, res) => {
   const financeVisible = can(req.user, req.appData, 'finance', 'view');
   const students = req.appData.students;
   const attendance = req.appData.attendance.filter(item => typeof item.date === 'string' && item.date.startsWith(`${month}-`));
+  const tuitionSummary = tuitionSummaryForMonth(req.appData, month);
+  const financeByStudent = new Map(tuitionSummary.students.map(item => [item.studentId, item]));
   const paid = req.appData.payments.filter(item => item.month === month && item.paid);
-  const tuitionOf = student => Number(student.tuition || 0);
-  const received = paid.reduce((sum, item) => sum + tuitionOf(students.find(student => student.id === item.studentId) || {}), 0);
-  const due = students.reduce((sum, student) => sum + (paid.some(item => item.studentId === student.id) ? 0 : tuitionOf(student)), 0);
   const present = attendance.filter(item => item.present).length;
   const classes = req.appData.classes.map(cls => {
     const classStudents = students.filter(student => student.classId === cls.id);
@@ -633,7 +698,7 @@ app.get('/api/reports', authenticate, (req, res) => {
     };
     if (financeVisible) {
       row.received = paid.reduce((sum, item) => sum + (classStudentIds.has(item.studentId)
-        ? tuitionOf(classStudents.find(student => student.id === item.studentId))
+        ? financeByStudent.get(item.studentId)?.amountDue || 0
         : 0), 0);
     }
     return row;
@@ -644,8 +709,8 @@ app.get('/api/reports', authenticate, (req, res) => {
     attendanceRate: attendance.length ? Math.round(present / attendance.length * 100) : null
   };
   if (financeVisible) {
-    summary.received = received;
-    summary.due = due;
+    summary.received = tuitionSummary.summary.received;
+    summary.due = tuitionSummary.summary.outstanding;
   }
   return res.json({ month, summary, classes, financeVisible });
 });

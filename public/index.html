@@ -180,7 +180,19 @@
             <label id="student-tuition-field" class="field">Học phí / tháng (đ)<input name="tuition" type="number" min="0" step="1000" value="0"></label>
             <div class="form-actions"><button class="primary-btn" type="submit">Lưu học sinh</button><button class="secondary-btn" data-cancel-form type="button" hidden>Hủy sửa</button></div>
           </form>
-          <div class="table-wrap spacer-top"><table><thead><tr><th>Họ tên</th><th>Lớp</th><th>Số điện thoại</th><th>Học phí / tháng</th><th>Thao tác</th></tr></thead><tbody id="student-table"></tbody></table></div>
+          <div id="bulk-student-section" class="spacer-top">
+            <h3>Thêm nhiều học sinh</h3>
+            <p class="muted">Nhập mỗi học sinh trên một dòng. Các em sẽ được xếp vào cùng một lớp.</p>
+            <form id="bulk-student-form" class="two-col">
+              <label class="field" style="grid-column: 1 / -1">Danh sách họ tên
+                <textarea name="names" rows="7" maxlength="20000" placeholder="Nguyễn Văn A&#10;Trần Thị B" required></textarea>
+              </label>
+              <label class="field">Lớp<select name="classId"></select></label>
+              <label id="bulk-student-tuition-field" class="field">Học phí / tháng (đ)<input name="tuition" type="number" min="0" step="1000" value="0"></label>
+              <div class="form-actions"><button class="primary-btn" type="submit">Thêm danh sách</button></div>
+            </form>
+          </div>
+          <div class="table-wrap spacer-top"><table><thead><tr><th>Họ tên</th><th>Lớp</th><th>Số điện thoại</th><th>Học phí / tháng</th><th>Học phí / buổi</th><th>Thao tác</th></tr></thead><tbody id="student-table"></tbody></table></div>
         </div>
       </section>
 
@@ -262,7 +274,19 @@
         <div class="panel">
           <div class="panel-header"><h2>Quản lý học phí</h2></div>
           <label class="field">Tháng<input id="finance-month" type="month"></label>
-          <div class="table-wrap"><table><thead><tr><th>Học sinh</th><th>Lớp</th><th>Học phí</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="finance-table"></tbody></table></div>
+          <div id="finance-bulk-tuition-controls" class="toolbar spacer-top">
+            <label class="field">Học phí tháng áp dụng cho toàn bộ học sinh (đ)
+              <input id="finance-bulk-tuition" type="number" min="0" max="1000000000" step="1000" value="0" required>
+            </label>
+            <button id="save-finance-bulk-tuition" class="primary-btn" type="button">Lưu cho tất cả học sinh</button>
+          </div>
+          <div class="report-grid spacer-top">
+            <div class="stat-card"><h3>Tổng phải đóng theo buổi</h3><strong id="finance-total-due">0 đ</strong></div>
+            <div class="stat-card"><h3>Đã thu</h3><strong id="finance-total-received">0 đ</strong></div>
+            <div class="stat-card"><h3>Còn phải thu</h3><strong id="finance-total-outstanding">0 đ</strong></div>
+          </div>
+          <p class="muted">Học phí/buổi = học phí/tháng ÷ 8. Phải đóng theo buổi = số buổi có mặt trong tháng × học phí/buổi.</p>
+          <div class="table-wrap"><table><thead><tr><th>Học sinh</th><th>Lớp</th><th>Học phí / tháng</th><th>Buổi có mặt</th><th>Học phí / buổi</th><th>Phải đóng theo buổi</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="finance-table"></tbody></table></div>
         </div>
       </section>
 
@@ -348,6 +372,8 @@
       data: { classes: [], students: [], attendance: [], staffAttendance: [], assessments: [], payments: [], accounts: [], permissions: structuredClone(DEFAULT_PERMISSIONS) },
       syncedData: null,
       reportData: null,
+      financeSummary: null,
+      financeSummaryPending: null,
       syncTimer: null
     };
     const $ = (selector, root = document) => root.querySelector(selector);
@@ -449,6 +475,8 @@
         });
         state.data = normalizeData(payload.data);
         state.syncedData = clone(state.data);
+        state.financeSummary = null;
+        state.financeSummaryPending = null;
         $('#sync-status').textContent = 'Đã đồng bộ';
       } catch (error) {
         state.data = clone(state.syncedData);
@@ -460,6 +488,8 @@
       const freshData = await fetchData();
       state.data = freshData;
       state.syncedData = clone(freshData);
+      state.financeSummary = null;
+      state.financeSummaryPending = null;
       renderAll();
       $('#sync-status').textContent = `Đồng bộ lúc ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`;
     }
@@ -472,6 +502,8 @@
           if (JSON.stringify(fresh) !== JSON.stringify(state.syncedData)) {
             state.data = fresh;
             state.syncedData = clone(fresh);
+            state.financeSummary = null;
+            state.financeSummaryPending = null;
             renderAll();
           }
           $('#sync-status').textContent = `Đồng bộ lúc ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}`;
@@ -549,9 +581,21 @@
       $('#dashboard-attendance-heading').hidden = !hasPermission('attendance', 'view');
       if (hasPermission('finance', 'view')) {
         const month = localDate().slice(0, 7);
-        const received = state.data.payments.filter(item => item.month === month && item.paid)
-          .reduce((sum, item) => sum + Number(state.data.students.find(student => student.id === item.studentId)?.tuition || 0), 0);
-        $('#stat-revenue').textContent = money(received);
+        if (state.financeSummary?.month === month) {
+          $('#stat-revenue').textContent = money(state.financeSummary.summary.received);
+        } else if (state.financeSummaryPending !== month) {
+          const requestToken = state.token;
+          state.financeSummaryPending = month;
+          apiRequest(`${API_URL}/finance?month=${encodeURIComponent(month)}`).then(summary => {
+            if (requestToken !== state.token) return;
+            state.financeSummary = summary;
+            if (localDate().slice(0, 7) === month) $('#stat-revenue').textContent = money(summary.summary.received);
+          }).catch(error => {
+            if (requestToken === state.token) setNotice(error.message);
+          }).finally(() => {
+            if (requestToken === state.token && state.financeSummaryPending === month) state.financeSummaryPending = null;
+          });
+        }
       }
       const today = localDate();
       $('#dashboard-class-table').innerHTML = state.data.classes.map(item => {
@@ -588,8 +632,10 @@
         ].filter(Boolean).join(' ');
         return `<tr><td>${escapeHtml(item.name)}</td><td>${hasPermission('finance', 'view') ? money(item.tuition) : '—'}</td><td>${count}</td><td>${actions || '—'}</td></tr>`;
       }).join('') || '<tr><td colspan="4" class="muted">Chưa có lớp học.</td></tr>';
-      $('#student-form select[name="classId"]').innerHTML = '<option value="">Chưa xếp lớp</option>' +
+      const studentClassOptions = '<option value="">Chưa xếp lớp</option>' +
         state.data.classes.map(item => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.name)}</option>`).join('');
+      $('#student-form select[name="classId"]').innerHTML = studentClassOptions;
+      $('#bulk-student-form select[name="classId"]').innerHTML = studentClassOptions;
       $$('[data-edit-class]').forEach(button => button.addEventListener('click', () => {
         const item = state.data.classes.find(entry => entry.id === button.dataset.editClass);
         if (!item) return;
@@ -617,13 +663,16 @@
       $('#student-form').hidden = !canCreate && !hasPermission('students', 'update');
       $('#student-tuition-field').hidden = !hasPermission('finance', 'view');
       $('#student-form').elements.tuition.readOnly = !hasPermission('finance', 'manage');
+      $('#bulk-student-section').hidden = !canCreate;
+      $('#bulk-student-tuition-field').hidden = !hasPermission('finance', 'view');
+      $('#bulk-student-form').elements.tuition.readOnly = !hasPermission('finance', 'manage');
       $('#student-table').innerHTML = state.data.students.map(item => {
         const actions = [
           hasPermission('students', 'update') ? `<button class="secondary-btn" data-edit-student="${escapeHtml(item.id)}" type="button">Sửa</button>` : '',
           hasPermission('students', 'delete') ? `<button class="danger-btn" data-delete-student="${escapeHtml(item.id)}" type="button">Xóa</button>` : ''
         ].filter(Boolean).join(' ');
-        return `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(getClassName(item.classId))}</td><td>${escapeHtml(item.phone || '—')}</td><td>${hasPermission('finance', 'view') ? money(item.tuition) : '—'}</td><td>${actions || '—'}</td></tr>`;
-      }).join('') || '<tr><td colspan="5" class="muted">Chưa có học sinh.</td></tr>';
+        return `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(getClassName(item.classId))}</td><td>${escapeHtml(item.phone || '—')}</td><td>${hasPermission('finance', 'view') ? money(item.tuition) : '—'}</td><td>${hasPermission('finance', 'view') ? money(Number(item.tuition || 0) / 8) : '—'}</td><td>${actions || '—'}</td></tr>`;
+      }).join('') || '<tr><td colspan="6" class="muted">Chưa có học sinh.</td></tr>';
       $$('[data-edit-student]').forEach(button => button.addEventListener('click', () => {
         const item = state.data.students.find(entry => entry.id === button.dataset.editStudent);
         if (!item) return;
@@ -814,34 +863,73 @@
         $('#payroll-table').innerHTML = '<tr><td colspan="6" class="muted">Không tải được bảng lương.</td></tr>';
       }
     }
-    function renderFinance() {
+    async function renderFinance() {
       const monthField = $('#finance-month');
       if (!monthField.value) monthField.value = localDate().slice(0, 7);
-      $('#finance-table').innerHTML = state.data.students.map(student => {
-        const payment = getPayment(student.id, monthField.value);
-        const paid = Boolean(payment?.paid);
-        const action = hasPermission('finance', 'manage')
-          ? `<button class="secondary-btn" data-toggle-payment="${escapeHtml(student.id)}" type="button">${paid ? 'Đánh dấu chưa đóng' : 'Đánh dấu đã đóng'}</button>${payment ? ` <button class="danger-btn" data-delete-payment="${escapeHtml(student.id)}" type="button">Xóa</button>` : ''}` : 'Chỉ xem';
-        return `<tr><td>${escapeHtml(student.name)}</td><td>${escapeHtml(getClassName(student.classId))}</td><td>${money(student.tuition)}</td><td><span class="status-badge ${paid ? '' : 'unpaid'}">${paid ? 'Đã đóng' : 'Chưa đóng'}</span></td><td>${action}</td></tr>`;
-      }).join('') || '<tr><td colspan="5" class="muted">Chưa có học sinh.</td></tr>';
-      $$('[data-toggle-payment]').forEach(button => button.addEventListener('click', runAction(async () => {
-        const studentId = button.dataset.togglePayment;
-        const month = monthField.value;
-        const existing = getPayment(studentId, month);
-        if (existing) existing.paid = !existing.paid;
-        else state.data.payments.push({ studentId, month, paid: true, updatedAt: new Date().toISOString() });
-        await saveData();
-        renderAll();
-      })));
-      $$('[data-delete-payment]').forEach(button => button.addEventListener('click', runAction(async () => {
-        if (!hasPermission('finance', 'manage')) throw new Error('Bạn không có quyền xóa dữ liệu học phí.');
-        const payment = getPayment(button.dataset.deletePayment, monthField.value);
-        if (!payment || !confirm(`Xóa trạng thái học phí tháng ${monthField.value} của học sinh này?`)) return;
-        state.data.payments = state.data.payments.filter(item => item !== payment);
-        await saveData();
-        renderAll();
-        setNotice('Đã xóa bản ghi học phí.', true);
-      })));
+      const month = monthField.value;
+      $('#finance-table').innerHTML = '<tr><td colspan="8" class="muted">Đang tính học phí...</td></tr>';
+      try {
+        const result = await apiRequest(`${API_URL}/finance?month=${encodeURIComponent(month)}`);
+        if (monthField.value !== month) return;
+        state.financeSummary = result;
+        $('#finance-total-due').textContent = money(result.summary.due);
+        $('#finance-total-received').textContent = money(result.summary.received);
+        $('#finance-total-outstanding').textContent = money(result.summary.outstanding);
+        const financeRows = new Map(result.students.map(item => [item.studentId, item]));
+        const canManageFinance = hasPermission('finance', 'manage');
+        $('#finance-bulk-tuition-controls').hidden = !canManageFinance;
+        $('#finance-table').innerHTML = state.data.students.map(student => {
+          const finance = financeRows.get(student.id) || {
+            attendedSessions: 0,
+            sessionTuition: Number(student.tuition || 0) / 8,
+            amountDue: 0,
+            paid: false
+          };
+          const monthlyTuition = canManageFinance
+            ? `<input data-monthly-tuition type="number" min="0" max="1000000000" step="1000" value="${Number(student.tuition || 0)}" aria-label="Học phí tháng của ${escapeHtml(student.name)}"> <button class="secondary-btn" data-save-monthly-tuition="${escapeHtml(student.id)}" type="button">Lưu</button>`
+            : money(student.tuition);
+          const action = canManageFinance
+            ? `<button class="secondary-btn" data-toggle-payment="${escapeHtml(student.id)}" type="button">${finance.paid ? 'Đánh dấu chưa đóng' : 'Đánh dấu đã đóng'}</button>${getPayment(student.id, month) ? ` <button class="danger-btn" data-delete-payment="${escapeHtml(student.id)}" type="button">Xóa</button>` : ''}` : 'Chỉ xem';
+          const feePerSession = finance.sessionTuition;
+          return `<tr data-finance-student="${escapeHtml(student.id)}"><td>${escapeHtml(student.name)}</td><td>${escapeHtml(getClassName(student.classId))}</td><td>${monthlyTuition}</td><td>${finance.attendedSessions}</td><td>${money(feePerSession)}</td><td>${money(finance.amountDue)}</td><td><span class="status-badge ${finance.paid ? '' : 'unpaid'}">${finance.paid ? 'Đã đóng' : 'Chưa đóng'}</span></td><td>${action}</td></tr>`;
+        }).join('') || '<tr><td colspan="8" class="muted">Chưa có học sinh.</td></tr>';
+        $$('[data-save-monthly-tuition]').forEach(button => button.addEventListener('click', runAction(async () => {
+          if (!hasPermission('finance', 'manage')) throw new Error('Bạn không có quyền thay đổi học phí.');
+          const row = button.closest('[data-finance-student]');
+          const tuitionValue = $('[data-monthly-tuition]', row).value.trim();
+          if (!tuitionValue) throw new Error('Vui lòng nhập học phí tháng.');
+          const tuition = Number(tuitionValue);
+          if (!Number.isSafeInteger(tuition) || tuition < 0 || tuition > 1000000000) {
+            throw new Error('Học phí tháng phải là số nguyên từ 0 đến 1.000.000.000 đồng.');
+          }
+          await apiRequest(`${API_URL}/finance/monthly-tuition`, {
+            method: 'PUT',
+            body: JSON.stringify({ studentId: row.dataset.financeStudent, tuition })
+          });
+          await refreshData();
+          setNotice(`Đã cập nhật học phí tháng của ${row.cells[0].textContent}.`, true);
+        })));
+        $$('[data-toggle-payment]').forEach(button => button.addEventListener('click', runAction(async () => {
+          const studentId = button.dataset.togglePayment;
+          const existing = getPayment(studentId, month);
+          if (existing) existing.paid = !existing.paid;
+          else state.data.payments.push({ studentId, month, paid: true, updatedAt: new Date().toISOString() });
+          await saveData();
+          renderAll();
+        })));
+        $$('[data-delete-payment]').forEach(button => button.addEventListener('click', runAction(async () => {
+          if (!hasPermission('finance', 'manage')) throw new Error('Bạn không có quyền xóa dữ liệu học phí.');
+          const payment = getPayment(button.dataset.deletePayment, month);
+          if (!payment || !confirm(`Xóa trạng thái học phí tháng ${month} của học sinh này?`)) return;
+          state.data.payments = state.data.payments.filter(item => item !== payment);
+          await saveData();
+          renderAll();
+          setNotice('Đã xóa bản ghi học phí.', true);
+        })));
+      } catch (error) {
+        setNotice(error.message);
+        $('#finance-table').innerHTML = '<tr><td colspan="8" class="muted">Không tải được bảng học phí.</td></tr>';
+      }
     }
     async function renderReports() {
       const monthInput = $('#report-month');
@@ -909,7 +997,7 @@
       renderAttendance();
       if (hasPermission('grades', 'view')) renderAssessments();
       if (hasPermission('staffAttendance', 'view')) renderStaffAttendance();
-      renderFinance();
+      if (hasPermission('finance', 'view')) renderFinance();
       if (hasPermission('reports', 'view')) renderReports();
       renderAccounts();
       renderPermissions();
@@ -924,12 +1012,16 @@
       state.token = null;
       state.currentUser = null;
       state.syncedData = null;
+      state.financeSummary = null;
+      state.financeSummaryPending = null;
       sessionStorage.removeItem('nttclass-session');
       showLogin(message);
     }
     async function openApp(account, token) {
       state.token = token;
       state.currentUser = account;
+      state.financeSummary = null;
+      state.financeSummaryPending = null;
       state.data = await fetchData();
       state.syncedData = clone(state.data);
       sessionStorage.setItem('nttclass-session', JSON.stringify({ token }));
@@ -1017,13 +1109,49 @@
           current.classId = classId;
           if (hasPermission('finance', 'view')) current.tuition = tuition;
         } else {
-          state.data.students.push({ id: crypto.randomUUID(), name, phone: form.elements.phone.value.trim(), classId, tuition: hasPermission('finance', 'view') ? tuition : 0 });
+          state.data.students.push({
+            id: crypto.randomUUID(),
+            name,
+            phone: form.elements.phone.value.trim(),
+            classId,
+            tuition: hasPermission('finance', 'view') ? tuition : 0
+          });
         }
         await saveData();
         form.reset();
         setFormMode(form, '');
         renderAll();
         setNotice(editId ? 'Đã cập nhật học sinh.' : 'Đã thêm học sinh.', true);
+      })();
+    });
+    $('#bulk-student-form').addEventListener('submit', event => {
+      event.preventDefault();
+      runAction(async () => {
+        if (!hasPermission('students', 'create')) throw new Error('Bạn không có quyền thêm học sinh.');
+        const form = event.currentTarget;
+        const names = form.elements.names.value.split(/\r?\n/).map(name => name.trim()).filter(Boolean);
+        if (!names.length) throw new Error('Vui lòng nhập ít nhất một họ tên học sinh.');
+        if (names.length > 200) throw new Error('Mỗi lần chỉ có thể thêm tối đa 200 học sinh.');
+        const invalidName = names.find(name => name.length > 80);
+        if (invalidName) throw new Error('Mỗi họ tên không được vượt quá 80 ký tự.');
+        const classId = form.elements.classId.value || '';
+        if (classId && !state.data.classes.some(item => item.id === classId)) throw new Error('Lớp học đã chọn không còn tồn tại.');
+        const tuition = Number(form.elements.tuition.value || 0);
+        if (hasPermission('finance', 'view') && (!Number.isFinite(tuition) || tuition < 0)) {
+          throw new Error('Học phí không hợp lệ.');
+        }
+        const newStudents = names.map(name => ({
+          id: crypto.randomUUID(),
+          name,
+          phone: '',
+          classId,
+          tuition: hasPermission('finance', 'view') ? tuition : 0
+        }));
+        state.data.students.push(...newStudents);
+        await saveData();
+        form.reset();
+        renderAll();
+        setNotice(`Đã thêm ${newStudents.length} học sinh.`, true);
       })();
     });
     $$('[data-cancel-form]').forEach(button => button.addEventListener('click', () => {
@@ -1183,6 +1311,23 @@
       form.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
     $('#finance-month').addEventListener('change', renderFinance);
+    $('#save-finance-bulk-tuition').addEventListener('click', runAction(async () => {
+      if (!hasPermission('finance', 'manage')) throw new Error('Bạn không có quyền thay đổi học phí.');
+      const tuitionValue = $('#finance-bulk-tuition').value.trim();
+      if (!tuitionValue) throw new Error('Vui lòng nhập học phí tháng áp dụng cho toàn bộ học sinh.');
+      const tuition = Number(tuitionValue);
+      if (!Number.isSafeInteger(tuition) || tuition < 0 || tuition > 1000000000) {
+        throw new Error('Học phí tháng phải là số nguyên từ 0 đến 1.000.000.000 đồng.');
+      }
+      if (!state.data.students.length) throw new Error('Chưa có học sinh để cập nhật học phí.');
+      if (!confirm(`Áp dụng học phí ${money(tuition)}/tháng cho toàn bộ ${state.data.students.length} học sinh?`)) return;
+      const result = await apiRequest(`${API_URL}/finance/monthly-tuition`, {
+        method: 'PUT',
+        body: JSON.stringify({ tuition, allStudents: true })
+      });
+      await refreshData();
+      setNotice(`Đã cập nhật học phí tháng cho ${result.updatedCount} học sinh.`, true);
+    }));
     $('#report-month').addEventListener('change', renderReports);
     $('#export-report-btn').addEventListener('click', runAction(async () => {
       const month = $('#report-month').value;
@@ -1193,7 +1338,7 @@
       const headers = ['Lớp', 'Sĩ số', 'Lượt điểm danh', 'Có mặt', 'Tỷ lệ chuyên cần'];
       if (financeVisible) headers.push('Đã thu');
       const rows = report.classes.map(row => {
-        const values = [row.name, row.students, row.sessions, row.present, `${row.rate}%`];
+        const values = [row.name, row.students, row.sessions, row.present, row.rate === null ? '—' : `${row.rate}%`];
         if (financeVisible) values.push(row.received);
         return values;
       });
