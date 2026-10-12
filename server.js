@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const sqlite3 = require('sqlite3').verbose();
+const ExcelJS = require('exceljs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -637,6 +638,81 @@ app.get('/api/finance', authenticate, (req, res) => {
   return res.json({ month, ...tuitionSummaryForMonth(req.appData, month) });
 });
 
+app.get('/api/finance/export', authenticate, async (req, res) => {
+  if (!can(req.user, req.appData, 'finance', 'view')) {
+    return res.status(403).json({ error: 'Bạn không có quyền xuất dữ liệu học phí.' });
+  }
+  const { month } = req.query;
+  if (!isValidMonth(month)) {
+    return res.status(400).json({ error: 'Tháng học phí không hợp lệ.' });
+  }
+  try {
+    const tuition = tuitionSummaryForMonth(req.appData, month);
+    const studentsById = new Map(req.appData.students.map(student => [student.id, student]));
+    const classesById = new Map(req.appData.classes.map(item => [item.id, item.name]));
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'NTTCLASS';
+    workbook.created = new Date();
+
+    const details = workbook.addWorksheet('Hoc phi');
+    details.columns = [
+      { header: 'Học sinh', key: 'student', width: 30 },
+      { header: 'Lớp', key: 'className', width: 24 },
+      { header: 'Học phí / tháng (đ)', key: 'monthlyTuition', width: 22 },
+      { header: 'Buổi có mặt', key: 'attendedSessions', width: 16 },
+      { header: 'Học phí / buổi (đ)', key: 'sessionTuition', width: 20 },
+      { header: 'Phải đóng (đ)', key: 'amountDue', width: 20 },
+      { header: 'Trạng thái', key: 'status', width: 16 }
+    ];
+    details.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    details.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF3159D9' } };
+    details.views = [{ state: 'frozen', ySplit: 1 }];
+    details.autoFilter = { from: 'A1', to: 'G1' };
+    for (const item of tuition.students) {
+      const student = studentsById.get(item.studentId);
+      if (!student) throw new Error(`Student ${item.studentId} was not found while exporting tuition.`);
+      details.addRow({
+        student: student.name,
+        className: classesById.get(student.classId) || 'Chưa xếp lớp',
+        monthlyTuition: Number(student.tuition || 0),
+        attendedSessions: item.attendedSessions,
+        sessionTuition: item.sessionTuition,
+        amountDue: item.amountDue,
+        status: item.paid ? 'Đã đóng' : 'Chưa đóng'
+      });
+    }
+    for (const column of ['C', 'E', 'F']) {
+      details.getColumn(column).numFmt = '#,##0.###';
+    }
+    const summary = workbook.addWorksheet('Tổng hợp');
+    summary.columns = [
+      { header: 'Nội dung', key: 'label', width: 34 },
+      { header: 'Giá trị', key: 'value', width: 22 }
+    ];
+    summary.addRows([
+      { label: 'Tháng', value: month },
+      { label: 'Tổng phải đóng theo buổi (đ)', value: tuition.summary.due },
+      { label: 'Đã thu (đ)', value: tuition.summary.received },
+      { label: 'Còn phải thu (đ)', value: tuition.summary.outstanding },
+      { label: 'Công thức', value: 'Học phí tháng / 8 × số buổi có mặt' }
+    ]);
+    summary.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    summary.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF3159D9' } };
+    for (const row of [3, 4, 5]) summary.getCell(`B${row}`).numFmt = '#,##0.###';
+
+    const file = await workbook.xlsx.writeBuffer();
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': `attachment; filename="nttclass-hoc-phi-${month}.xlsx"`,
+      'Cache-Control': 'no-store'
+    });
+    return res.send(Buffer.from(file));
+  } catch (error) {
+    console.error('Export tuition workbook failed:', error.message);
+    return res.status(500).json({ error: 'Không thể xuất file Excel học phí.' });
+  }
+});
+
 app.put('/api/finance/monthly-tuition', authenticate, async (req, res) => {
   if (!can(req.user, req.appData, 'finance', 'manage')) {
     return res.status(403).json({ error: 'Bạn không có quyền thay đổi học phí.' });
@@ -697,6 +773,8 @@ app.get('/api/reports', authenticate, (req, res) => {
       rate: classAttendance.length ? Math.round(classPresent / classAttendance.length * 100) : null
     };
     if (financeVisible) {
+      row.amountDue = classStudents.reduce((sum, student) =>
+        sum + (financeByStudent.get(student.id)?.amountDue || 0), 0);
       row.received = paid.reduce((sum, item) => sum + (classStudentIds.has(item.studentId)
         ? financeByStudent.get(item.studentId)?.amountDue || 0
         : 0), 0);

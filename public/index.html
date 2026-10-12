@@ -272,7 +272,7 @@
 
       <section id="view-finance" hidden>
         <div class="panel">
-          <div class="panel-header"><h2>Quản lý học phí</h2></div>
+          <div class="panel-header"><h2>Quản lý học phí</h2><button id="export-finance-btn" class="secondary-btn" type="button">Xuất Excel tháng</button></div>
           <label class="field">Tháng<input id="finance-month" type="month"></label>
           <div id="finance-bulk-tuition-controls" class="toolbar spacer-top">
             <label class="field">Học phí tháng áp dụng cho toàn bộ học sinh (đ)
@@ -304,7 +304,7 @@
             <div class="stat-card"><h3>Chuyên cần</h3><strong id="report-attendance-rate">0%</strong></div>
           </div>
           <div class="panel-header"><h2>Thống kê theo lớp</h2></div>
-          <div class="table-wrap"><table class="report-table"><thead><tr><th>Lớp</th><th>Sĩ số</th><th>Lượt điểm danh</th><th>Có mặt</th><th>Tỷ lệ chuyên cần</th><th id="report-revenue-heading">Đã thu</th></tr></thead><tbody id="report-class-table"></tbody></table></div>
+          <div class="table-wrap"><table class="report-table"><thead><tr><th>Lớp</th><th>Sĩ số</th><th>Lượt điểm danh</th><th>Có mặt</th><th>Tỷ lệ chuyên cần</th><th id="report-due-heading">Học phí phải thu</th><th id="report-revenue-heading">Đã thu</th></tr></thead><tbody id="report-class-table"></tbody></table></div>
         </div>
       </section>
 
@@ -417,6 +417,20 @@
         throw new Error(payload.error || 'Yêu cầu không thành công.');
       }
       return payload;
+    }
+    async function downloadFile(url, filename) {
+      const response = await fetch(url, { headers: apiHeaders() });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        if (response.status === 401 && state.token) signOut('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.');
+        throw new Error(payload.error || 'Không thể tải tệp.');
+      }
+      const objectUrl = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = objectUrl;
+      link.download = filename;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
     }
     async function fetchData() {
       const payload = await apiRequest(`${API_URL}/data`);
@@ -865,6 +879,7 @@
     }
     async function renderFinance() {
       const monthField = $('#finance-month');
+      $('#export-finance-btn').hidden = !hasPermission('finance', 'view');
       if (!monthField.value) monthField.value = localDate().slice(0, 7);
       const month = monthField.value;
       $('#finance-table').innerHTML = '<tr><td colspan="8" class="muted">Đang tính học phí...</td></tr>';
@@ -938,8 +953,9 @@
       const financeVisible = hasPermission('finance', 'view');
       $('#report-collected-card').hidden = !financeVisible;
       $('#report-outstanding-card').hidden = !financeVisible;
+      $('#report-due-heading').hidden = !financeVisible;
       $('#report-revenue-heading').hidden = !financeVisible;
-      $('#report-class-table').innerHTML = '<tr><td colspan="6" class="muted">Đang tải báo cáo...</td></tr>';
+      $('#report-class-table').innerHTML = `<tr><td colspan="${financeVisible ? 7 : 5}" class="muted">Đang tải báo cáo...</td></tr>`;
       try {
         const result = await apiRequest(`${API_URL}/reports?month=${encodeURIComponent(month)}`);
         if ($('#report-month').value !== month) return;
@@ -949,8 +965,8 @@
         $('#report-present').textContent = Number(result.summary.present || 0).toLocaleString('vi-VN');
         $('#report-attendance-rate').textContent = result.summary.attendanceRate === null ? '—' : `${result.summary.attendanceRate}%`;
         $('#report-class-table').innerHTML = result.classes.map(row =>
-          `<tr><td>${escapeHtml(row.name)}</td><td>${row.students}</td><td>${row.sessions}</td><td>${row.present}</td><td>${row.rate === null ? '—' : `${row.rate}%`}</td>${financeVisible ? `<td>${money(row.received)}</td>` : ''}</tr>`
-        ).join('') || `<tr><td colspan="${financeVisible ? 6 : 5}" class="muted">Chưa có dữ liệu trong tháng này.</td></tr>`;
+          `<tr><td>${escapeHtml(row.name)}</td><td>${row.students}</td><td>${row.sessions}</td><td>${row.present}</td><td>${row.rate === null ? '—' : `${row.rate}%`}</td>${financeVisible ? `<td>${money(row.amountDue)}</td><td>${money(row.received)}</td>` : ''}</tr>`
+        ).join('') || `<tr><td colspan="${financeVisible ? 7 : 5}" class="muted">Chưa có dữ liệu trong tháng này.</td></tr>`;
       } catch (error) {
         setNotice(error.message);
       }
@@ -1311,6 +1327,16 @@
       form.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
     $('#finance-month').addEventListener('change', renderFinance);
+    $('#export-finance-btn').addEventListener('click', runAction(async () => {
+      if (!hasPermission('finance', 'view')) throw new Error('Bạn không có quyền xem dữ liệu học phí.');
+      const month = $('#finance-month').value;
+      if (!month) throw new Error('Vui lòng chọn tháng cần xuất.');
+      await downloadFile(
+        `${API_URL}/finance/export?month=${encodeURIComponent(month)}`,
+        `nttclass-hoc-phi-${month}.xlsx`
+      );
+      setNotice(`Đã xuất bảng học phí tháng ${month}.`, true);
+    }));
     $('#save-finance-bulk-tuition').addEventListener('click', runAction(async () => {
       if (!hasPermission('finance', 'manage')) throw new Error('Bạn không có quyền thay đổi học phí.');
       const tuitionValue = $('#finance-bulk-tuition').value.trim();
@@ -1336,10 +1362,10 @@
         ? state.reportData
         : await apiRequest(`${API_URL}/reports?month=${encodeURIComponent(month)}`);
       const headers = ['Lớp', 'Sĩ số', 'Lượt điểm danh', 'Có mặt', 'Tỷ lệ chuyên cần'];
-      if (financeVisible) headers.push('Đã thu');
+      if (financeVisible) headers.push('Học phí phải thu', 'Đã thu');
       const rows = report.classes.map(row => {
         const values = [row.name, row.students, row.sessions, row.present, row.rate === null ? '—' : `${row.rate}%`];
-        if (financeVisible) values.push(row.received);
+        if (financeVisible) values.push(row.amountDue, row.received);
         return values;
       });
       const csv = [headers, ...rows].map(row => row.map(value => {
