@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: nttclass
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: NTTCLASS_DB_PATH
+        value: /var/data/nttclass.db
+      - key: NTTCLASS_ADMIN_USERNAME
+        sync: false
+      - key: NTTCLASS_ADMIN_PASSWORD
+        sync: false
+      - key: NTTCLASS_ADMIN_DISPLAY_NAME
+        sync: false
+      - key: NTTCLASS_ACCOUNT_CREATION_CODE
+        sync: false
+    disk:
+      name: nttclass-data
+      mountPath: /var/data
+      sizeGB: 1

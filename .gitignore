@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+nttclass.db
+nttclass.db-journal
+nttclass.db-shm
+nttclass.db-wal
+node_modules/
