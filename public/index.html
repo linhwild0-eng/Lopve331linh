@@ -205,8 +205,13 @@
           </div>
           <div id="attendance-list"></div>
           <div class="form-actions spacer-top">
+            <button id="mark-all-attendance" class="secondary-btn" type="button">Điểm danh tất cả</button>
             <button id="save-attendance" class="primary-btn" type="button">Lưu điểm danh</button>
             <button id="delete-attendance" class="danger-btn" type="button">Xóa điểm danh ngày/lớp đang chọn</button>
+          </div>
+          <div class="spacer-top">
+            <h3>Danh sách điểm danh đã lưu</h3>
+            <div class="table-wrap"><table><thead><tr><th>STT</th><th>Họ tên</th><th>Ngày tháng</th><th>Trạng thái</th></tr></thead><tbody id="attendance-records"></tbody></table></div>
           </div>
         </div>
       </section>
@@ -569,6 +574,10 @@
     function getAttendance(studentId, date) {
       return state.data.attendance.find(item => item.studentId === studentId && item.date === date);
     }
+    function displayDate(date) {
+      const [year, month, day] = date.split('-');
+      return `${day}/${month}/${year}`;
+    }
     function getStaffAttendance(userId, date) {
       return state.data.staffAttendance.find(item => item.userId === userId && item.date === date);
     }
@@ -722,6 +731,7 @@
       classSelect.value = [...classSelect.options].some(option => option.value === selected) ? selected : 'all';
       const students = state.data.students.filter(item => classSelect.value === 'all' || item.classId === classSelect.value);
       const canManage = hasPermission('attendance', 'manage');
+      $('#mark-all-attendance').hidden = !canManage;
       $('#save-attendance').hidden = !canManage;
       $('#delete-attendance').hidden = !canManage;
       $('#attendance-list').innerHTML = students.map(item => {
@@ -729,6 +739,19 @@
         const present = attendance ? attendance.present : false;
         return `<label class="check-row"><input type="checkbox" data-student-id="${escapeHtml(item.id)}" ${present ? 'checked' : ''} ${canManage ? '' : 'disabled'}><span>${escapeHtml(item.name)} — ${escapeHtml(getClassName(item.classId))} ${attendance ? (present ? '· Có mặt' : '· Vắng') : '· Chưa ghi nhận'}</span></label>`;
       }).join('') || '<p class="muted">Không có học sinh trong bộ lọc này.</p>';
+      const visibleStudentIds = new Set(students.map(student => student.id));
+      const studentsById = new Map(students.map(student => [student.id, student]));
+      const records = state.data.attendance
+        .filter(item => item.date === dateInput.value && visibleStudentIds.has(item.studentId))
+        .sort((a, b) => {
+          const nameA = studentsById.get(a.studentId)?.name || '';
+          const nameB = studentsById.get(b.studentId)?.name || '';
+          return nameA.localeCompare(nameB, 'vi');
+        });
+      $('#attendance-records').innerHTML = records.map((record, index) => {
+        const student = studentsById.get(record.studentId);
+        return `<tr><td class="number">${index + 1}</td><td>${escapeHtml(student?.name || 'Học sinh đã lưu trữ')}</td><td>${escapeHtml(displayDate(record.date))}</td><td><span class="status-badge ${record.present ? '' : 'unpaid'}">${record.present ? 'Có mặt' : 'Vắng'}</span></td></tr>`;
+      }).join('') || '<tr><td colspan="4" class="muted">Chưa có bản ghi điểm danh cho ngày/lớp đang chọn.</td></tr>';
     }
     function renderAssessments() {
       const canManage = hasPermission('grades', 'manage');
@@ -1187,18 +1210,26 @@
       setFormMode(form, '');
       form.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
-    $('#save-attendance').addEventListener('click', runAction(async () => {
+    async function saveAttendance(markAll = false) {
       if (!hasPermission('attendance', 'manage')) throw new Error('Bạn không có quyền ghi điểm danh.');
       const date = $('#attendance-date').value;
       if (!date) throw new Error('Vui lòng chọn ngày điểm danh.');
-      const visible = new Set($$('#attendance-list [data-student-id]').map(input => input.dataset.studentId));
+      const checkboxes = $$('#attendance-list [data-student-id]');
+      if (markAll && !checkboxes.length) throw new Error('Không có học sinh trong lớp đang chọn.');
+      const visible = new Set(checkboxes.map(input => input.dataset.studentId));
       state.data.attendance = state.data.attendance.filter(item => item.date !== date || !visible.has(item.studentId));
-      $$('#attendance-list [data-student-id]').forEach(input => {
-        state.data.attendance.push({ studentId: input.dataset.studentId, date, present: input.checked });
+      checkboxes.forEach(input => {
+        state.data.attendance.push({ studentId: input.dataset.studentId, date, present: markAll || input.checked });
       });
       await saveData();
       renderAttendance();
-      setNotice('Đã lưu điểm danh.', true);
+      setNotice(markAll ? `Đã điểm danh tất cả ${checkboxes.length} học sinh.` : 'Đã lưu điểm danh.', true);
+    }
+    $('#mark-all-attendance').addEventListener('click', runAction(async () => {
+      await saveAttendance(true);
+    }));
+    $('#save-attendance').addEventListener('click', runAction(async () => {
+      await saveAttendance();
     }));
     $('#delete-attendance').addEventListener('click', runAction(async () => {
       if (!hasPermission('attendance', 'manage')) throw new Error('Bạn không có quyền xóa điểm danh.');
