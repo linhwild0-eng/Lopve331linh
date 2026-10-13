@@ -606,6 +606,72 @@ app.get('/api/data', authenticate, (req, res) => {
   res.json(dataForUser(req.appData, req.user));
 });
 
+app.get('/api/attendance/export', authenticate, async (req, res) => {
+  if (!can(req.user, req.appData, 'attendance', 'view')) {
+    return res.status(403).json({ error: 'Bạn không có quyền xuất lịch sử điểm danh.' });
+  }
+  const classId = req.query.classId || 'all';
+  if (typeof classId !== 'string') {
+    return res.status(400).json({ error: 'Lớp cần xuất không hợp lệ.' });
+  }
+  if (classId !== 'all' && !req.appData.classes.some(item => item.id === classId)) {
+    return res.status(400).json({ error: 'Lớp cần xuất không tồn tại.' });
+  }
+  try {
+    const students = req.appData.students.filter(student => classId === 'all' || student.classId === classId);
+    const studentsById = new Map(students.map(student => [student.id, student]));
+    const attendance = req.appData.attendance
+      .filter(record => studentsById.has(record.studentId))
+      .sort((a, b) => {
+        const dateOrder = b.date.localeCompare(a.date);
+        if (dateOrder) return dateOrder;
+        return (studentsById.get(a.studentId)?.name || '').localeCompare(
+          studentsById.get(b.studentId)?.name || '',
+          'vi'
+        );
+      });
+    const classesById = new Map(req.appData.classes.map(item => [item.id, item.name]));
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'NTTCLASS';
+    workbook.created = new Date();
+
+    const worksheet = workbook.addWorksheet('Lich su diem danh');
+    worksheet.columns = [
+      { header: 'STT', key: 'index', width: 10 },
+      { header: 'Họ tên', key: 'student', width: 30 },
+      { header: 'Lớp', key: 'className', width: 24 },
+      { header: 'Ngày tháng', key: 'date', width: 18 },
+      { header: 'Trạng thái', key: 'status', width: 16 }
+    ];
+    worksheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    worksheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF3159D9' } };
+    worksheet.views = [{ state: 'frozen', ySplit: 1 }];
+    worksheet.autoFilter = { from: 'A1', to: 'E1' };
+    attendance.forEach((record, index) => {
+      const student = studentsById.get(record.studentId);
+      worksheet.addRow({
+        index: index + 1,
+        student: student.name,
+        className: classesById.get(student.classId) || 'Chưa xếp lớp',
+        date: new Date(`${record.date}T00:00:00.000Z`),
+        status: record.present ? 'Có mặt' : 'Vắng'
+      });
+    });
+    worksheet.getColumn('D').numFmt = 'dd/mm/yyyy';
+
+    const file = await workbook.xlsx.writeBuffer();
+    res.set({
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'Content-Disposition': 'attachment; filename="nttclass-lich-su-diem-danh.xlsx"',
+      'Cache-Control': 'no-store'
+    });
+    return res.send(Buffer.from(file));
+  } catch (error) {
+    console.error('Export attendance workbook failed:', error.message);
+    return res.status(500).json({ error: 'Không thể xuất file Excel lịch sử điểm danh.' });
+  }
+});
+
 function tuitionSummaryForMonth(data, month) {
   const attendanceCounts = new Map();
   for (const record of data.attendance) {

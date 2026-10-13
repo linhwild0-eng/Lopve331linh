@@ -210,7 +210,10 @@
             <button id="delete-attendance" class="danger-btn" type="button">Xóa điểm danh ngày/lớp đang chọn</button>
           </div>
           <div class="spacer-top">
-            <h3>Lịch sử điểm danh đã lưu</h3>
+            <div class="panel-header">
+              <h3>Lịch sử điểm danh đã lưu</h3>
+              <button id="export-attendance-btn" class="secondary-btn" type="button">Xuất Excel</button>
+            </div>
             <p class="muted">Hiển thị các ngày đã điểm danh của lớp đang chọn; dữ liệu ngày cũ được giữ lại khi điểm danh ngày mới.</p>
             <div class="table-wrap"><table><thead><tr><th>STT</th><th>Họ tên</th><th>Ngày tháng</th><th>Trạng thái</th></tr></thead><tbody id="attendance-records"></tbody></table></div>
           </div>
@@ -737,6 +740,7 @@
       $('#mark-all-attendance').hidden = !canManage;
       $('#save-attendance').hidden = !canManage;
       $('#delete-attendance').hidden = !canManage;
+      $('#export-attendance-btn').hidden = !hasPermission('attendance', 'view');
       $('#attendance-list').innerHTML = students.map(item => {
         const attendance = getAttendance(item.id, dateInput.value);
         const present = attendance ? attendance.present : false;
@@ -1256,6 +1260,15 @@
       await saveData();
       renderAll();
       setNotice('Đã xóa các bản ghi điểm danh đã chọn.', true);
+    }));
+    $('#export-attendance-btn').addEventListener('click', runAction(async () => {
+      if (!hasPermission('attendance', 'view')) throw new Error('Bạn không có quyền xem lịch sử điểm danh.');
+      const classId = $('#attendance-class').value || 'all';
+      await downloadFile(
+        `${API_URL}/attendance/export?classId=${encodeURIComponent(classId)}`,
+        'nttclass-lich-su-diem-danh.xlsx'
+      );
+      setNotice('Đã xuất lịch sử điểm danh ra Excel.', true);
     }));
     $('#attendance-class').addEventListener('change', renderAttendance);
     $('#attendance-date').addEventListener('change', renderAttendance);
